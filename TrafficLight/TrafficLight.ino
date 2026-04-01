@@ -26,7 +26,7 @@ const uint8_t JUMLAH_ARAH = sizeof(arah) / sizeof(arah[0]);
 
 // Waktu (ms)
 const uint16_t DURASI_HIJAU        = 5000;  // Hijau menyala 5 detik
-const uint16_t DURASI_KEDIP_KUNING = 2000;   // Periode kedip kuning (on/off masing-masing)
+const uint16_t DURASI_KEDIP_KUNING = 333;   // Periode kedip kuning (on/off masing-masing)
 const uint8_t  JUMLAH_KEDIP        = 3;     // Berapa kali kuning berkedip
 const uint16_t JEDA_ANTAR_ARAH     = 300;   // Jeda singkat sebelum arah berikutnya
 const uint16_t JEDA_MERAH_AWAL     = 2000;  // Jeda merah semua sebelum mulai kedip (ms)

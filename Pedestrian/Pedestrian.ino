@@ -1,226 +1,134 @@
 // ============================================================
-//  TRAFFIC LIGHT - Logika yang Benar
-//  Default: Kendaraan MERAH, Pedestrian MERAH
-//  Tekan tombol (dari MERAH):
-//    1. Pedestrian HIJAU (5 detik)
-//    2. Pedestrian MERAH
-//    3. Kuning kedip (transisi ke kendaraan)
-//    4. Kendaraan HIJAU (minimal 5 detik)
-//  Tekan tombol (dari HIJAU setelah ≥5 detik):
-//    1. Kuning kedip (peringatan)
-//    2. Kembali ke MERAH (default)
+// TRAFFIC LIGHT sederhana dengan INTERRUPT
+// State awal: Kendaraan HIJAU, Pedestrian MERAH
+// Tombol Kiri  -> Pin 2 (INT0)
+// Tombol Kanan -> Pin 3 (INT1)
 // ============================================================
 
 // Pin Kendaraan
-const int KEND_HIJAU  = 4;
-const int KEND_KUNING = 5;
-const int KEND_MERAH  = 6;
+const int KEND_HIJAU  = 6;
+const int KEND_KUNING = 7;
+const int KEND_MERAH  = 8;
 
-// Pin Pedestrian
-const int PED_KIRI_HIJAU = 7;
-const int PED_KIRI_MERAH = 8;
-const int PED_KANAN_HIJAU = 2;
-const int PED_KANAN_MERAH = 3;
+// Pin Pedestrian Kiri
+const int PED_KIRI_HIJAU  = 4;
+const int PED_KIRI_MERAH  = 5;
 
-// Pin Tombol
-const int TOMBOL_KIRI  = 12;
-const int TOMBOL_KANAN = 11;
+// Pin Pedestrian Kanan
+const int PED_KANAN_HIJAU  = 9;
+const int PED_KANAN_MERAH  = 10;
 
-// Durasi
-const unsigned long DURASI_PEDESTRIAN = 5000;
-const unsigned long DURASI_HIJAU_MIN  = 5000;
-const unsigned long KUNING_ON  = 300;
-const unsigned long KUNING_OFF = 300;
-const int JUMLAH_KEDIP = 4;
+// Pin Tombol (harus pin 2 & 3 untuk external interrupt Arduino UNO)
+const int TOMBOL_KIRI  = 2;   // INT0
+const int TOMBOL_KANAN = 3;   // INT1
 
-// Mode
-// 0 = MERAH (default)
-// 1 = Pedestrian HIJAU
-// 2 = Pedestrian MERAH (sebelum transisi ke kendaraan)
-// 3 = Kuning transisi ke HIJAU
-// 4 = Kendaraan HIJAU
-// 5 = Kuning transisi ke MERAH
-int mode = 0;
+// Durasi (milidetik)
+const int DURASI_PEDESTRIAN = 5000;
+const int DURASI_DEBOUNCE   = 50;
+const int DURASI_KUNING_ON  = 300;
+const int DURASI_KUNING_OFF = 300;
+const int JUMLAH_KEDIP      = 4;
 
-unsigned long waktuMode = 0;
-unsigned long waktuKedip = 0;
-int hitungKedip = 0;
-bool kuningNyala = false;
-bool tombolDitunda = false;
+// Flag global (volatile karena diubah dalam ISR)
+volatile bool tombolDitekan = false;
+bool sedangSibuk = false;
 
 void setup() {
-  pinMode(KEND_MERAH,  OUTPUT);
-  pinMode(KEND_KUNING, OUTPUT);
-  pinMode(KEND_HIJAU,  OUTPUT);
-  pinMode(PED_KIRI_MERAH,  OUTPUT);
+  // Output LED
+  pinMode(KEND_HIJAU,      OUTPUT);
+  pinMode(KEND_KUNING,     OUTPUT);
+  pinMode(KEND_MERAH,      OUTPUT);
   pinMode(PED_KIRI_HIJAU,  OUTPUT);
-  pinMode(PED_KANAN_MERAH, OUTPUT);
+  pinMode(PED_KIRI_MERAH,  OUTPUT);
   pinMode(PED_KANAN_HIJAU, OUTPUT);
+  pinMode(PED_KANAN_MERAH, OUTPUT);
+
+  // Input tombol dengan pull-up internal
   pinMode(TOMBOL_KIRI,  INPUT_PULLUP);
   pinMode(TOMBOL_KANAN, INPUT_PULLUP);
 
-  kondisiMerah(); // Mulai dengan MERAH
+  // Pasang interrupt pada pin 2 dan 3 (FALLING: tombol ditekan = LOW)
+  attachInterrupt(digitalPinToInterrupt(TOMBOL_KIRI), isrTombol, FALLING);
+  attachInterrupt(digitalPinToInterrupt(TOMBOL_KANAN), isrTombol, FALLING);
+
+  kondisiAwal();
 }
 
 void loop() {
-  // Baca tombol (hanya transisi dari tidak ditekan ke ditekan)
-  static bool lastTombol = false;
-  bool tombolSekarang = tombolDitekan();
-  bool tombolBaru = !lastTombol && tombolSekarang;
-  lastTombol = tombolSekarang;
+  // Periksa flag dari interrupt
+  if (tombolDitekan && !sedangSibuk) {
+    delay(DURASI_DEBOUNCE);   // debounce singkat
 
-  if (tombolBaru) {
-    if (mode == 0) {  // Dari MERAH -> langsung pedestrian hijau
-      mode = 1;
-      waktuMode = millis();
-      kondisiPedestrianHijau();
+    // Konfirmasi ulang tombol benar-benar ditekan
+    bool kiri  = (digitalRead(TOMBOL_KIRI)  == LOW);
+    bool kanan = (digitalRead(TOMBOL_KANAN) == LOW);
+
+    if (kiri || kanan) {
+      sedangSibuk = true;     // kunci agar tidak dipicu ulang
+      tombolDitekan = false;  // reset flag
+      modePenyebrang();       // jalankan siklus penyebrangan
+      sedangSibuk = false;    // buka kunci
+    } else {
+      // False trigger (bouncing), abaikan
+      tombolDitekan = false;
     }
-    else if (mode == 4) { // Dari HIJAU
-      unsigned long lamaHijau = millis() - waktuMode;
-      if (lamaHijau >= DURASI_HIJAU_MIN) {
-        mode = 5;
-        waktuMode = millis();
-        mulaiKuningKeMerah();
-      } else {
-        tombolDitunda = true; // Tunda sampai cukup 5 detik
-      }
-    }
-    // Mode lain diabaikan
-  }
-
-  unsigned long sekarang = millis();
-
-  switch (mode) {
-    case 1: // Pedestrian HIJAU 5 detik
-      if (sekarang - waktuMode >= DURASI_PEDESTRIAN) {
-        mode = 2;
-        waktuMode = sekarang;
-        kondisiPedestrianMerah();
-      }
-      break;
-
-    case 2: // Pedestrian MERAH -> langsung ke kuning transisi
-      mode = 3;
-      waktuMode = sekarang;
-      mulaiKuningTransisiKeHijau();
-      break;
-
-    case 3: // Kuning transisi ke HIJAU
-      if (prosesKedip(sekarang)) {
-        mode = 4;
-        waktuMode = sekarang;
-        tombolDitunda = false;
-        kondisiHijau();
-      }
-      break;
-
-    case 4: // HIJAU
-      if (tombolDitunda && (sekarang - waktuMode >= DURASI_HIJAU_MIN)) {
-        tombolDitunda = false;
-        mode = 5;
-        waktuMode = sekarang;
-        mulaiKuningKeMerah();
-      }
-      break;
-
-    case 5: // Kuning transisi ke MERAH
-      if (prosesKedip(sekarang)) {
-        mode = 0;
-        kondisiMerah();
-      }
-      break;
   }
 }
 
 // ------------------------------------------------------------------
-// Fungsi Bantu
+// Interrupt Service Routine (dipanggil saat tombol ditekan)
 // ------------------------------------------------------------------
-bool tombolDitekan() {
-  bool kiri  = (digitalRead(TOMBOL_KIRI)  == LOW);
-  bool kanan = (digitalRead(TOMBOL_KANAN) == LOW);
-  if (kiri || kanan) {
-    delay(50); // debounce
-    kiri  = (digitalRead(TOMBOL_KIRI)  == LOW);
-    kanan = (digitalRead(TOMBOL_KANAN) == LOW);
-    return (kiri || kanan);
-  }
-  return false;
+void isrTombol() {
+  tombolDitekan = true;   // hanya set flag, jangan lakukan delay di sini!
 }
 
-void kondisiMerah() {
+// ------------------------------------------------------------------
+// Fungsi-fungsi kontrol lampu
+// ------------------------------------------------------------------
+void kondisiAwal() {
   matikanSemua();
-  digitalWrite(KEND_MERAH, HIGH);
-  digitalWrite(PED_KIRI_MERAH, HIGH);
+  digitalWrite(KEND_HIJAU,      HIGH);
+  digitalWrite(PED_KIRI_MERAH,  HIGH);
   digitalWrite(PED_KANAN_MERAH, HIGH);
 }
 
-void kondisiPedestrianHijau() {
+void modePenyebrang() {
+  // Transisi ke pedestrian hijau
   matikanSemua();
-  digitalWrite(KEND_MERAH, HIGH);
-  digitalWrite(PED_KIRI_HIJAU, HIGH);
+  digitalWrite(KEND_MERAH,      HIGH);
+  digitalWrite(PED_KIRI_HIJAU,  HIGH);
   digitalWrite(PED_KANAN_HIJAU, HIGH);
-}
 
-void kondisiPedestrianMerah() {
-  digitalWrite(PED_KIRI_HIJAU, LOW);
+  delay(DURASI_PEDESTRIAN);
+
+  // Pedestrian merah, kendaraan masih merah
+  digitalWrite(PED_KIRI_HIJAU,  LOW);
   digitalWrite(PED_KANAN_HIJAU, LOW);
-  digitalWrite(PED_KIRI_MERAH, HIGH);
+  digitalWrite(PED_KIRI_MERAH,  HIGH);
   digitalWrite(PED_KANAN_MERAH, HIGH);
-  // Kendaraan merah tetap menyala
-}
 
-void kondisiHijau() {
-  matikanSemua();
-  digitalWrite(KEND_HIJAU, HIGH);
-  digitalWrite(PED_KIRI_MERAH, HIGH);
-  digitalWrite(PED_KANAN_MERAH, HIGH);
-}
-
-void mulaiKuningTransisiKeHijau() {
-  // Pedestrian merah sudah nyala, kendaraan merah juga nyala
-  hitungKedip = 0;
-  kuningNyala = false;
-  waktuKedip = millis();
-}
-
-void mulaiKuningKeMerah() {
-  // Matikan hijau, nyalakan pedestrian merah
-  digitalWrite(KEND_HIJAU, LOW);
-  digitalWrite(PED_KIRI_MERAH, HIGH);
-  digitalWrite(PED_KANAN_MERAH, HIGH);
-  hitungKedip = 0;
-  kuningNyala = false;
-  waktuKedip = millis();
-}
-
-bool prosesKedip(unsigned long sekarang) {
-  if (kuningNyala) {
-    if (sekarang - waktuKedip >= KUNING_ON) {
-      digitalWrite(KEND_KUNING, LOW);
-      kuningNyala = false;
-      waktuKedip = sekarang;
-      hitungKedip++;
-      if (hitungKedip >= JUMLAH_KEDIP) {
-        digitalWrite(KEND_KUNING, LOW);
-        return true;
-      }
-    }
-  } else {
-    if (sekarang - waktuKedip >= KUNING_OFF) {
-      digitalWrite(KEND_KUNING, HIGH);
-      kuningNyala = true;
-      waktuKedip = sekarang;
-    }
-  }
-  return false;
+  // Transisi kuning kedip lalu kembali ke kondisi awal
+  digitalWrite(KEND_MERAH, LOW);
+  kedipKuning();
+  kondisiAwal();
 }
 
 void matikanSemua() {
-  digitalWrite(KEND_MERAH,  LOW);
-  digitalWrite(KEND_KUNING, LOW);
-  digitalWrite(KEND_HIJAU,  LOW);
-  digitalWrite(PED_KIRI_MERAH,  LOW);
+  digitalWrite(KEND_HIJAU,      LOW);
+  digitalWrite(KEND_KUNING,     LOW);
+  digitalWrite(KEND_MERAH,      LOW);
   digitalWrite(PED_KIRI_HIJAU,  LOW);
-  digitalWrite(PED_KANAN_MERAH, LOW);
+  digitalWrite(PED_KIRI_MERAH,  LOW);
   digitalWrite(PED_KANAN_HIJAU, LOW);
+  digitalWrite(PED_KANAN_MERAH, LOW);
+}
+
+void kedipKuning() {
+  for (int i = 0; i < JUMLAH_KEDIP; i++) {
+    digitalWrite(KEND_KUNING, HIGH);
+    delay(DURASI_KUNING_ON);
+    digitalWrite(KEND_KUNING, LOW);
+    delay(DURASI_KUNING_OFF);
+  }
+  digitalWrite(KEND_KUNING, LOW);
 }
